@@ -25,6 +25,17 @@ struct Memtable{
     memtable: HashMap<String, String>,
 }
 
+struct IndexEntry {
+    key: String,
+    position: u64,
+}
+
+struct Sst {
+    data_path: PathBuf,
+    index_path: PathBuf,
+    index: Vec<(String, u64)>,
+}
+
 #[derive(Debug)]
 enum DBError {
     Io(std::io::Error),
@@ -64,6 +75,37 @@ impl Memtable {
     fn put(&mut self , key: String, value: String) {
         self.memtable.insert(key, value);
     }
+}
+
+impl Sst {
+    async fn construct(path: String, data: impl Iterator<Item = (String, String)>) -> Result<Sst, DBError>{
+
+        // open both file 
+        let data_path = PathBuf::from(format!("{}.data", path));
+        let index_path = PathBuf::from(format!("{}.data", path));
+
+        let mut data_file = OpenOptions::new().write(true).create(true).open(&data_path).await?;
+        let mut index_file = OpenOptions::new().write(true).create(true).open(&index_path).await?;
+        let mut index = HashMap::new();
+        const INDEX_SPLIT: usize = 16;
+
+        for (idx, (key, value)) in data.enumerate() {
+            if idx % INDEX_SPLIT == 0 {
+                index.insert(key.clone(), data_file.seek(tokio::io::SeekFrom::Current(0)).await?);
+            }
+            let put = Put { key, value };
+            let serialized = serde_json::to_string(&put)?;
+            data_file.write_all(serialized.as_bytes()).await?;
+            data_file.write_all(b"\n").await?;
+        }
+
+        data_file.sync_all().await?;
+        let index_data = serde_json::to_string(&index)?;
+        index_file.write_all(index_data.to_string().as_bytes()).await?;
+        index_file.write_all(b"\n").await?;
+        index_file.sync_all().await?;
+        Ok(Sst { data_path, index_path, index })
+     }
 }
 
 
